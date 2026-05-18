@@ -13,3 +13,45 @@ CS2-Bot-NadeSystem is a plugin based on CounterStrikeSharp that allows bots to r
 [Ray-Trace](https://github.com/FUNPLAY-pro-CS2/Ray-Trace)
 
 # Installation
+1. Download the latest **RayTrace-MM.tar.gz** and **RayTrace-CSS-API.tar.gz** from [Ray-Trace](https://github.com/FUNPLAY-pro-CS2/Ray-Trace/releases)
+
+2. Extract the folders and upload them to `game/csgo/addons` on your server
+
+3. Download the latest **NadeSystem.zip** from [here](https://github.com/ed0ard/CS2-Bot-NadeSystem/releases) and **NadeLauncher.dll** from [here](https://github.com/StefanKunde/NadeLauncher/releases)
+
+4. Extract the `NadeSystem` folder and upload it to `game/csgo/addons/counterstrikesharp/plugins` on your server
+
+5. Upload `NadeLauncher.dll` to `game/csgo/addons/counterstrikesharp/plugins/NadeLauncher/NadeLauncher.dll` on your server
+
+# Commands
+`bot_nades`  
+Shows the current nade throwing mode
+
+`bot_nades off`  
+Bots won't throw any nades
+
+`bot_nades normal`  
+Bots follow almost the same count limits as human players (default)
+
+`bot_nades more`  
+Bots use the same decision logic as normal mode with higher count limits (recommended)
+
+`bot_nades max`  
+Bots have minimal limitations and think less before throwing nades
+
+# Instructions
+## Record Lineups
+Record lineups using [NadeLauncher](https://github.com/StefanKunde/NadeLauncher).
+
+(You can find your lineup libraries in `game\csgo\addons\counterstrikesharp\plugins\NadeLauncher\data\lineups`)
+
+## Convert Lineups
+Run **convert_lineups.py** in your CMD or PowerShell with the command `python convert_lineups.py "NadeLauncherPath" "NadeSystemPath"`.
+
+(For example, `python convert_lineups.py "C:\Steam\steamapps\common\Counter-Strike Global Offensive\game\csgo\addons\counterstrikesharp\plugins\NadeLauncher" "C:\Steam\steamapps\common\Counter-Strike Global Offensive\game\csgo\addons\counterstrikesharp\plugins\NadeSystem"`)
+
+If you don't have Python installed on your computer, run **convert_lineups.exe** with the command `.\convert_lineups.exe "NadeLauncherPath" "NadeSystemPath"`.
+
+(After conversion, you can check lineup libraries for bots in `game\csgo\addons\counterstrikesharp\plugins\NadeSystem\grenades`)
+
+## So bots can "rethrow" the nades recorded by you now

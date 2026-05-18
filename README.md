@@ -43,6 +43,8 @@ Bots have minimal limitations and think less before throwing nades
 ## Record Lineups
 Record lineups using [NadeLauncher](https://github.com/StefanKunde/NadeLauncher).
 
+<img width="2560" height="1440" alt="730_71" src="https://github.com/user-attachments/assets/1b380d1c-5c72-4715-bec1-e0f5e920cc9a" />
+
 (You can find your lineup libraries in `game\csgo\addons\counterstrikesharp\plugins\NadeLauncher\data\lineups`)
 
 ## Convert Lineups
@@ -55,3 +57,5 @@ If you don't have Python installed on your computer, run **convert_lineups.exe**
 (After conversion, you can check lineup libraries for bots in `game\csgo\addons\counterstrikesharp\plugins\NadeSystem\grenades`)
 
 ## So bots can "rethrow" the nades recorded by you now
+
+<img width="2560" height="1440" alt="730_73" src="https://github.com/user-attachments/assets/ac569784-374f-494c-a4be-bdd89d0347c8" />

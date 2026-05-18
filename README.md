@@ -47,6 +47,11 @@ Record lineups using [NadeLauncher](https://github.com/StefanKunde/NadeLauncher)
 
 (You can find your lineup libraries in `game\csgo\addons\counterstrikesharp\plugins\NadeLauncher\data\lineups`)
 
+## Add Descriptions
+If you want the bots to **only** use the lineups at **round start**, add uppercase `T` for Terrorists and uppercase `CT` for Counter-Terrorists at the start of lineup descriptions.
+
+If your lineup needs to **break the window first**, stand in the same position and throw a flashbang to smash the window, and add `decoy` to the lineup description. Then the bots will throw a decoy first to break the window before triggering your lineup.
+
 ## Convert Lineups
 Run **convert_lineups.py** in your CMD or PowerShell with the command `python convert_lineups.py "NadeLauncherPath" "NadeSystemPath"`.
 

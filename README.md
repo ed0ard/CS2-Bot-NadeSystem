@@ -57,7 +57,7 @@ Run **convert_lineups.py** in your CMD or PowerShell with the command `python co
 
 (For example, `python convert_lineups.py "C:\Steam\steamapps\common\Counter-Strike Global Offensive\game\csgo\addons\counterstrikesharp\plugins\NadeLauncher" "C:\Steam\steamapps\common\Counter-Strike Global Offensive\game\csgo\addons\counterstrikesharp\plugins\NadeSystem"`)
 
-If you don't have Python installed on your computer, run **convert_lineups.exe** with the command `.\convert_lineups.exe "NadeLauncherPath" "NadeSystemPath"`.
+If you don't have Python installed on your computer, double-click **convert_lineups.exe** with both `NadeLauncher` and `NadeSystem` enabled.
 
 (After conversion, you can check lineup libraries for bots in `game\csgo\addons\counterstrikesharp\plugins\NadeSystem\grenades`)
 

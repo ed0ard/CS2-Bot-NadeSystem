@@ -66,4 +66,4 @@ If you don't have Python installed on your computer, double-click **convert_line
 <img width="2560" height="1440" alt="730_73" src="https://github.com/user-attachments/assets/ac569784-374f-494c-a4be-bdd89d0347c8" />
 
 # Credits
-Special thanks to [QQundalf](https://github.com/StefanKunde).
+Special thanks to [QQundalf](https://github.com/StefanKunde) and [DANK1NG1I45l4](https://github.com/DANK1NG1I45l4).

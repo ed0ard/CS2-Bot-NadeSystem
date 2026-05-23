@@ -57,10 +57,13 @@ Run **convert_lineups.py** in your CMD or PowerShell with the command `python co
 
 (For example, `python convert_lineups.py "C:\Steam\steamapps\common\Counter-Strike Global Offensive\game\csgo\addons\counterstrikesharp\plugins\NadeLauncher" "C:\Steam\steamapps\common\Counter-Strike Global Offensive\game\csgo\addons\counterstrikesharp\plugins\NadeSystem"`)
 
-If you don't have Python installed on your computer, double-click **convert_lineups.exe** with both `NadeLauncher` and `NadeSystem` enabled.
+If you don't have Python installed on your computer, double-click **convert_lineups.exe** to convert lineups automatically.
 
 (After conversion, you can check lineup libraries for bots in `game\csgo\addons\counterstrikesharp\plugins\NadeSystem\grenades`)
 
 ## So bots can "rethrow" the nades recorded by you now
 
 <img width="2560" height="1440" alt="730_73" src="https://github.com/user-attachments/assets/ac569784-374f-494c-a4be-bdd89d0347c8" />
+
+# Credits
+Special thanks to [QQundalf](https://github.com/StefanKunde).

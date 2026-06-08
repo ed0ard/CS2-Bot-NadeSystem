@@ -101,7 +101,7 @@ public class RoundCounter
 public class NadeSystemPlugin : BasePlugin
 {
     public override string ModuleName    => "NadeSystem";
-    public override string ModuleVersion => "1.1.0";
+    public override string ModuleVersion => "1.1.3";
     public override string ModuleAuthor  => "ed0ard";
 
     // grenades folder lives inside the plugin directory
@@ -119,6 +119,8 @@ public class NadeSystemPlugin : BasePlugin
     private float                 _freezeEndTime     = 0f;
     private Dictionary<uint, int> _roundSpendPerBot  = new();
     private HashSet<uint>         _poorBots          = new();
+    // Information System
+    private Dictionary<string, float> _probFailCooldown = new();
     // flash immunity
     private Dictionary<uint, float> _botFlashImmunityUntil = new();
     // Ray-Trace interface
@@ -152,6 +154,8 @@ public class NadeSystemPlugin : BasePlugin
     private const float SoundInfoRadius = 100f;
     // Footstep speed threshold (horizontal velocity above this makes audible footstep sound)
     private const float FootstepSpeedThreshold = 150f;
+    // Max distance at which a sound point can be heard by an enemy.
+    private const float SoundHearRadius = 1000f;
     // ── Static lookup tables ───────────────────────────────────
     // (mapName_teamTag) → seconds after freezeend within which smoke/flash may trigger
     // e.g. "de_dust2_T" → 13f  means T-side nades tagged "T" must trigger within 13s of freezeend
@@ -401,6 +405,7 @@ public class NadeSystemPlugin : BasePlugin
                 // Vertical distance check
                 if (MathF.Abs(dz) > 85f) continue;
                 if (IsOnCooldown(g.Id)) continue;
+                if (gtype is "he" or "molotov" or "flash" && IsOnProbFailCooldown(g.Id)) continue;
                 // Probability attempt cooldown
                 if (gtype == "smoke" && _smokeCooldownBots.Contains((uint)bot.Index)) continue;
                 // Smoke Overlap Check
@@ -438,8 +443,8 @@ public class NadeSystemPlugin : BasePlugin
                             .FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller")
                             .Any(p =>
                             {
-                                if (!p.IsValid || !p.PawnIsAlive || (int)p.TeamNum == bot.TeamNum) return false;
-                                var ep = p.PlayerPawn?.Value?.AbsOrigin;
+                                if (!p.IsValid || (int)p.TeamNum == bot.TeamNum) return false;
+                                var ep = GetActiveLivePawn(p)?.AbsOrigin;
                                 if (ep == null) return false;
                                 float ddx = ep.X - lx, ddy = ep.Y - ly, ddz = ep.Z - lz;
                                 return ddx*ddx + ddy*ddy + ddz*ddz <= 300f * 300f;
@@ -546,16 +551,45 @@ public class NadeSystemPlugin : BasePlugin
         return dot >= 0f; // angle > 90°, skip
     }
 
+    // Returns the pawn the controller is CURRENTLY operating (m_hPawn), only if alive.
+    // When a dead human takes over a bot, the human's PlayerPawn (m_hPlayerPawn) still
+    // points at their corpse while Pawn (m_hPawn) points at the live bot body.
+    private CCSPlayerPawn? GetActiveLivePawn(CCSPlayerController p)
+    {
+        if (!p.IsValid) return null;
+        var basePawn = p.Pawn?.Value;
+        if (basePawn == null || !basePawn.IsValid) return null;
+        if (basePawn.LifeState != 0) return null; // 0 = LIFE_ALIVE
+        if (basePawn.Health <= 0) return null;
+        return basePawn.As<CCSPlayerPawn>();
+    }
+
     // ═══════════════════════════════════════════════════════════
     //  Information system: sound trail + vision
     //  Updated every tick for ALL players
     // ═══════════════════════════════════════════════════════════
     // Record a sound point at the player's current origin.
-    private void RecordSoundPoint(CCSPlayerController? player)
+    private void RecordSoundPoint(CCSPlayerController? player, List<CCSPlayerController>? allPlayers = null)
     {
-        if (player == null || !player.IsValid || !player.PawnIsAlive) return;
-        var origin = player.PlayerPawn?.Value?.AbsOrigin;
+        if (player == null) return;
+        var origin = GetActiveLivePawn(player)?.AbsOrigin;
         if (origin == null) return;
+
+        // Only keep this sound point if at least one enemy is close enough to hear it.
+        float ox = origin.X, oy = origin.Y, oz = origin.Z;
+        float r2 = SoundHearRadius * SoundHearRadius;
+        var candidates = allPlayers
+            ?? Utilities.FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller").ToList();
+        bool audibleToEnemy = candidates
+            .Any(e =>
+            {
+                if (!e.IsValid || (int)e.TeamNum == player.TeamNum) return false;
+                var ep = GetActiveLivePawn(e)?.AbsOrigin;
+                if (ep == null) return false;
+                float dx = ep.X - ox, dy = ep.Y - oy, dz = ep.Z - oz;
+                return dx*dx + dy*dy + dz*dz <= r2;
+            });
+        if (!audibleToEnemy) return;
 
         uint idx = (uint)player.Index;
         if (!_soundPoints.TryGetValue(idx, out var list))
@@ -563,7 +597,7 @@ public class NadeSystemPlugin : BasePlugin
             list = new List<Vector>();
             _soundPoints[idx] = list;
         }
-        list.Add(new Vector(origin.X, origin.Y, origin.Z));
+        list.Add(new Vector(ox, oy, oz));
     }
 
     private HookResult OnWeaponFire(EventWeaponFire @event, GameEventInfo info)
@@ -604,24 +638,24 @@ public class NadeSystemPlugin : BasePlugin
     // Add a fresh point if the player is currently making footstep sound (speed > threshold).
     private void UpdateSoundTrails()
     {
-        foreach (var p in Utilities.FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller"))
+        var allPlayers = Utilities.FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller").ToList();
+        foreach (var p in allPlayers)
         {
             if (!p.IsValid) continue;
             uint idx = (uint)p.Index;
 
-            if (!p.PawnIsAlive)
+            var pawn = GetActiveLivePawn(p);
+            if (pawn == null)
             {
                 _soundPoints.Remove(idx);
                 continue;
             }
-
-            var pawn = p.PlayerPawn?.Value;
-            var origin = pawn?.AbsOrigin;
-            if (pawn == null || origin == null) continue;
+            var origin = pawn.AbsOrigin;
+            if (origin == null) continue;
 
             float cx = origin.X, cy = origin.Y, cz = origin.Z;
 
-            // Prune points outside the info radius (keep only what is "near here").
+            // Delete all kinds of sound points outside the info radius (keep only what is "near here").
             if (_soundPoints.TryGetValue(idx, out var list) && list.Count > 0)
             {
                 float r2 = SoundInfoRadius * SoundInfoRadius;
@@ -638,7 +672,7 @@ public class NadeSystemPlugin : BasePlugin
             {
                 float speed2 = vel.X * vel.X + vel.Y * vel.Y;
                 if (speed2 > FootstepSpeedThreshold * FootstepSpeedThreshold)
-                    RecordSoundPoint(p);
+                    RecordSoundPoint(p, allPlayers);
             }
         }
     }
@@ -657,7 +691,7 @@ public class NadeSystemPlugin : BasePlugin
     private bool EnemySeesTarget(CCSPlayerController enemy, CCSPlayerController target)
     {
         if (!enemy.IsValid || !target.IsValid) return false;
-        var targetPawn = target.PlayerPawn?.Value;
+        var targetPawn = GetActiveLivePawn(target);
         if (targetPawn == null || !targetPawn.IsValid) return false;
 
         try
@@ -685,8 +719,8 @@ public class NadeSystemPlugin : BasePlugin
     // Geometric vision fallback.
     private bool EnemySeesTargetGeometric(CCSPlayerController enemy, CCSPlayerController target)
     {
-        var ep = enemy.PlayerPawn?.Value;
-        var tp = target.PlayerPawn?.Value;
+        var ep = GetActiveLivePawn(enemy);
+        var tp = GetActiveLivePawn(target);
         if (ep?.AbsOrigin == null || ep.EyeAngles == null) return false;
         if (tp?.AbsOrigin == null) return false;
 
@@ -1108,6 +1142,12 @@ public class NadeSystemPlugin : BasePlugin
         float now = Server.CurrentTime;
         _cooldowns.RemoveAll(c => c.ExpiresAt <= now);
     }
+    // Information System cooldown
+    private bool IsOnProbFailCooldown(string id)
+        => _probFailCooldown.TryGetValue(id, out float t) && t > Server.CurrentTime;
+
+    private void RegisterProbFailCooldown(string id)
+        => _probFailCooldown[id] = Server.CurrentTime + 3f;
 
     private static float Dist3D(float x1, float y1, float z1, float x2, float y2, float z2)
     {
@@ -1154,6 +1194,8 @@ public class NadeSystemPlugin : BasePlugin
         // Information System
         _soundPoints.Clear();
         _botLastFireTime.Clear();
+        foreach (var key in _probFailCooldown.Where(kv => kv.Value <= Server.CurrentTime).Select(kv => kv.Key).ToList())
+            _probFailCooldown.Remove(key);
         // Save money for poor bots
         _poorBots.Clear();
         if (!IsPistolRound())
@@ -1302,8 +1344,8 @@ public class NadeSystemPlugin : BasePlugin
                 .FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller")
                 .Where(p =>
                 {
-                    if (!p.IsValid || !p.PawnIsAlive || (int)p.TeamNum == bot.TeamNum) return false;
-                    var ep = p.PlayerPawn?.Value?.AbsOrigin;
+                    if (!p.IsValid || (int)p.TeamNum == bot.TeamNum) return false;
+                    var ep = GetActiveLivePawn(p)?.AbsOrigin;
                     if (ep == null) return false;
                     float dx = ep.X - lx, dy = ep.Y - ly, dz = ep.Z - lz;
                     return dx*dx + dy*dy + dz*dz <= 200f * 200f;
@@ -1318,9 +1360,16 @@ public class NadeSystemPlugin : BasePlugin
                 if (!anyInfo)
                 {
                     // No info on any nearby enemy: roll probability.
-                    // HE -> 20%, molotov -> 60%.
-                    float prob = gtype == "he" ? 0.20f : 0.60f;
-                    if (Random.Shared.NextDouble() >= prob) return false;
+                    float prob;
+                    if (_botNadesMode == "more")
+                        prob = gtype == "he" ? 0.50f : 0.80f;   // more: HE 50%, molotov 80%
+                    else
+                        prob = gtype == "he" ? 0.20f : 0.60f;   // normal: HE 20%, molotov 60%
+                    if (Random.Shared.NextDouble() >= prob)
+                    {
+                        RegisterProbFailCooldown(g.Id);
+                        return false;
+                    }
                 }
             }
             //  Don't throw molotov into smoke
@@ -1353,11 +1402,19 @@ public class NadeSystemPlugin : BasePlugin
             if (blindableEnemies.Count == 0) return false;
 
             // Information gate (normal / more mode): if no blindable enemy has info on this bot,
-            // roll an 80% probability gate.
             if (_botNadesMode == "normal" || _botNadesMode == "more")
             {
                 bool anyInfo = blindableEnemies.Any(e => HasInformationOn(e, bot));
-                if (!anyInfo && Random.Shared.NextDouble() >= 0.80f) return false;
+                if (!anyInfo)
+                {
+                    // No info: normal: flash 80%, more: flash 100%.
+                    float prob = _botNadesMode == "more" ? 1.00f : 0.80f;
+                    if (Random.Shared.NextDouble() >= prob)
+                    {
+                        RegisterProbFailCooldown(g.Id);
+                        return false;
+                    }
+                }
             }
         }
 
@@ -1388,8 +1445,8 @@ public class NadeSystemPlugin : BasePlugin
                 .FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller")
                 .Any(p =>
                 {
-                    if (!p.IsValid || !p.PawnIsAlive || (int)p.TeamNum == bot.TeamNum) return false;
-                    var ep = p.PlayerPawn?.Value?.AbsOrigin;
+                    if (!p.IsValid || (int)p.TeamNum == bot.TeamNum) return false;
+                    var ep = GetActiveLivePawn(p)?.AbsOrigin;
                     if (ep == null) return false;
                     return Dist3D(lx, ly, lz, ep.X, ep.Y, ep.Z) <= 2200f;
                 });
@@ -1405,8 +1462,8 @@ public class NadeSystemPlugin : BasePlugin
                     .FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller")
                     .Any(p =>
                     {
-                        if (!p.IsValid || !p.PawnIsAlive || (int)p.TeamNum == bot.TeamNum) return false;
-                        var ep = p.PlayerPawn?.Value?.AbsOrigin;
+                        if (!p.IsValid || (int)p.TeamNum == bot.TeamNum) return false;
+                        var ep = GetActiveLivePawn(p)?.AbsOrigin;
                         if (ep == null) return false;
                         return Dist3D(lx, ly, lz, ep.X, ep.Y, ep.Z) <= 1000f;
                     });
@@ -1430,7 +1487,7 @@ public class NadeSystemPlugin : BasePlugin
             {
                 foreach (var p in allAlive)
                 {
-                    var pp = p.PlayerPawn?.Value?.AbsOrigin;
+                    var pp = GetActiveLivePawn(p)?.AbsOrigin;
                     if (pp == null) continue;
                     if (Dist3D(botPos.X, botPos.Y, botPos.Z, pp.X, pp.Y, pp.Z) > 800f) continue;
                     if ((int)p.TeamNum == bot.TeamNum) nearbyFriend++;
@@ -1471,8 +1528,8 @@ public class NadeSystemPlugin : BasePlugin
         float lx = g.LandingPosition.X, ly = g.LandingPosition.Y, lz = g.LandingPosition.Z;
         foreach (var p in Utilities.FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller"))
         {
-            if (!p.IsValid || !p.PawnIsAlive || (int)p.TeamNum == bot.TeamNum) continue;
-            var ep = p.PlayerPawn?.Value;
+            if (!p.IsValid || (int)p.TeamNum == bot.TeamNum) continue;
+            var ep = GetActiveLivePawn(p);
             if (ep?.AbsOrigin == null || ep.EyeAngles == null) continue;
 
             float viewZ = 64f;
@@ -1512,10 +1569,11 @@ public class NadeSystemPlugin : BasePlugin
         int blindable = 0, total = 0;
         foreach (var p in Utilities.FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller"))
         {
-            if (!p.IsValid || !p.PawnIsAlive || (int)p.TeamNum == bot.TeamNum) continue;
+            if (!p.IsValid || (int)p.TeamNum == bot.TeamNum) continue;
+            var ep = GetActiveLivePawn(p);
+            if (ep == null) continue;
             total++;
-            var ep = p.PlayerPawn?.Value;
-            if (ep?.AbsOrigin == null || ep.EyeAngles == null) continue;
+            if (ep.AbsOrigin == null || ep.EyeAngles == null) continue;
 
             float eyeX = ep.AbsOrigin.X, eyeY = ep.AbsOrigin.Y, eyeZ = ep.AbsOrigin.Z + 64f;
             float dx = lx - eyeX, dy = ly - eyeY, dz = lz - eyeZ;
@@ -1677,6 +1735,8 @@ public class NadeSystemPlugin : BasePlugin
 
     private HookResult OnBombBeginDefuse(EventBombBegindefuse @event, GameEventInfo info)
     {
+        RecordSoundPoint(@event.Userid);
+
         var bot = @event.Userid;
         if (bot == null || !bot.IsValid || !bot.IsBot) return HookResult.Continue;
         if (bot.HasBeenControlledByPlayerThisRound) return HookResult.Continue;
@@ -1725,6 +1785,8 @@ public class NadeSystemPlugin : BasePlugin
     // Plant smoke
     private HookResult OnBombBeginPlant(EventBombBeginplant @event, GameEventInfo info)
     {
+        RecordSoundPoint(@event.Userid);
+
         if (_plantSmokeUsed) return HookResult.Continue;
 
         var bot = @event.Userid;
@@ -1822,7 +1884,7 @@ public class NadeSystemPlugin : BasePlugin
                     || weapon.Contains("inferno",     StringComparison.OrdinalIgnoreCase);
         if (!isHE && !isMolotov) return;
 
-        var atkPos = attacker.PlayerPawn?.Value?.AbsOrigin;
+        var atkPos = GetActiveLivePawn(attacker)?.AbsOrigin;
         if (atkPos == null) return;
 
         string map = Server.MapName;
@@ -1842,9 +1904,9 @@ public class NadeSystemPlugin : BasePlugin
                 .FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller")
                 .Count(p =>
                 {
-                    if (!p.IsValid || !p.PawnIsAlive || (int)p.TeamNum != victim.TeamNum) return false;
+                    if (!p.IsValid || (int)p.TeamNum != victim.TeamNum) return false;
                     if (vPos == null) return false;
-                    var pp = p.PlayerPawn?.Value?.AbsOrigin;
+                    var pp = GetActiveLivePawn(p)?.AbsOrigin;
                     if (pp == null) return false;
                     return Dist3D(vPos.X, vPos.Y, vPos.Z, pp.X, pp.Y, pp.Z) <= 800f;
                 });

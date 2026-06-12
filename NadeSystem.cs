@@ -101,7 +101,7 @@ public class RoundCounter
 public class NadeSystemPlugin : BasePlugin
 {
     public override string ModuleName    => "NadeSystem";
-    public override string ModuleVersion => "1.1.3";
+    public override string ModuleVersion => "1.1.4";
     public override string ModuleAuthor  => "ed0ard";
 
     // grenades folder lives inside the plugin directory
@@ -145,9 +145,12 @@ public class NadeSystemPlugin : BasePlugin
     // key = botIndex, value = (windowExpiresAt, blindRatio)
     private Dictionary<uint, (float ExpiresAt, float Ratio)> _botFlashRatioWindow = new();
     // ── Information system (sound trail + vision) ──────────────
+    // Plain value-type coordinate: avoids allocating a CSS Vector (managed wrapper
+    // + native memory) per recorded sound point.
+    private readonly record struct SoundPoint(float X, float Y, float Z);
     // key = controller index, value = list of positions where this player made audible sound.
     // Only points within 100f of the player's current position are kept each tick.
-    private Dictionary<uint, List<Vector>> _soundPoints = new();
+    private Dictionary<uint, List<SoundPoint>> _soundPoints = new();
     // key = controller index, value = last weapon_fire time (global, all players)
     private Dictionary<uint, float> _botLastFireTime = new();
     // Sound trail capture radius (a recorded sound point counts as "info" within this range)
@@ -200,7 +203,7 @@ public class NadeSystemPlugin : BasePlugin
     {
         ["smoke"]   = 19f,
         ["flash"]   = 4f,
-        ["he"]      = 3f,
+        ["he"]      = 5f,
         ["molotov"] = 10f,
         ["decoy"]   = 600f,  // per-round once
     };
@@ -209,22 +212,24 @@ public class NadeSystemPlugin : BasePlugin
     private static readonly Dictionary<string, int> CostT =
         new(StringComparer.OrdinalIgnoreCase)
     {
-        ["flash"]   = 200,
-        ["smoke"]   = 300,
-        ["he"]      = 300,
-        ["molotov"] = 400,
-        ["decoy"]   = 0,
+        ["flash"]      = 200,
+        ["smoke"]      = 300,
+        ["he"]         = 300,
+        ["molotov"]    = 400,
+        ["incgrenade"] = 400,
+        ["decoy"]      = 0,
     };
 
     // CT-side purchase cost
     private static readonly Dictionary<string, int> CostCT =
         new(StringComparer.OrdinalIgnoreCase)
     {
-        ["flash"]   = 200,
-        ["smoke"]   = 300,
-        ["he"]      = 300,
-        ["molotov"] = 500,
-        ["decoy"]   = 0,
+        ["flash"]      = 200,
+        ["smoke"]      = 300,
+        ["he"]         = 300,
+        ["molotov"]    = 500,
+        ["incgrenade"] = 500,
+        ["decoy"]      = 0,
     };
 
     // ── Native grenade factory functions ──────────────────────
@@ -319,6 +324,8 @@ public class NadeSystemPlugin : BasePlugin
                 foreach (var entry in list)
                 {
                     entry.Description ??= "";
+                    // Normalize once at load so hot paths can compare without ToLower()
+                    entry.GrenadeType = (entry.GrenadeType ?? "").ToLowerInvariant();
                     // Rewrite grenadeType to "decoy" if description contains "decoy"
                     if (entry.Description.Contains("decoy", StringComparison.OrdinalIgnoreCase))
                         entry.GrenadeType = "decoy";
@@ -362,10 +369,16 @@ public class NadeSystemPlugin : BasePlugin
         var mapNades = _mapNades;
         if (mapNades.Count == 0) return;
 
-        bool hasLiveEnemyT  = HasLiveEnemyForTeam((int)CsTeam.Terrorist);
-        bool hasLiveEnemyCT = HasLiveEnemyForTeam((int)CsTeam.CounterTerrorist);
+        // Materialize the controller list once per scan; every sub-check below
+        // reuses it instead of re-walking the entity table.
+        var allControllers = Utilities
+            .FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller")
+            .ToList();
 
-        foreach (var bot in Utilities.FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller"))
+        bool hasLiveEnemyT  = HasLiveEnemyForTeam((int)CsTeam.Terrorist, allControllers);
+        bool hasLiveEnemyCT = HasLiveEnemyForTeam((int)CsTeam.CounterTerrorist, allControllers);
+
+        foreach (var bot in allControllers)
         {
             if (!bot.IsValid || !bot.IsBot) continue;
             var pawn = bot.PlayerPawn?.Value;
@@ -383,7 +396,7 @@ public class NadeSystemPlugin : BasePlugin
 
             foreach (var g in mapNades)
             {
-                var gtype = g.GrenadeType.ToLower();
+                var gtype = g.GrenadeType; // lowercase since LoadDb
                 float viewOffsetZ = 64f;
                 // 2D distance check (XY plane only)
                 float dx = pos.X - g.ZoneX;
@@ -421,7 +434,7 @@ public class NadeSystemPlugin : BasePlugin
                     if (tooClose) continue;
                 }
 
-                bool hasLiveEnemy = bot.TeamNum == (int)CsTeam.Terrorist ? hasLiveEnemyCT : hasLiveEnemyT;
+                bool hasLiveEnemy = bot.TeamNum == (int)CsTeam.Terrorist ? hasLiveEnemyT : hasLiveEnemyCT;
                 if (!hasLiveEnemy) continue;
                 // Direction Judge 90°
                 // normal mode/ more mode：smoke and flash
@@ -433,14 +446,13 @@ public class NadeSystemPlugin : BasePlugin
 
                 if (_botNadesMode == "max")
                 {
-                    if (gtype == "flash" && CanBlindAnyEnemy(bot, g).Count == 0) continue;
+                    if (gtype == "flash" && CanBlindAnyEnemy(bot, g, allControllers).Count == 0) continue;
                     // No HE/molotov within 1s of this bot firing.
                     if (gtype is "he" or "molotov" && FiredRecently(bot, 1f)) continue;
                     if (gtype is "he" or "molotov")
                     {
                         float lx = g.LandingPosition.X, ly = g.LandingPosition.Y, lz = g.LandingPosition.Z;
-                        bool enemyIn400 = Utilities
-                            .FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller")
+                        bool enemyIn400 = allControllers
                             .Any(p =>
                             {
                                 if (!p.IsValid || (int)p.TeamNum == bot.TeamNum) return false;
@@ -471,7 +483,7 @@ public class NadeSystemPlugin : BasePlugin
                         }
                     }
                     // smoke: no additional check beyond zone/overlap/direction above
-                    TryReplay(bot, g);
+                    TryReplay(bot, g, allControllers);
                 }
                 else //normal mode/ more mode
                 {
@@ -496,16 +508,16 @@ public class NadeSystemPlugin : BasePlugin
                         }
                         // Passed — compute new ratio and reset window after TryConditionalReplay succeeds
                         // We pass ratio computation into TryConditionalReplay via a pre-check here
-                        var (blindable, total) = CountBlindableEnemies(bot, g);
+                        var (blindable, total) = CountBlindableEnemies(bot, g, allControllers);
                         float ratio = GetFlashRatioThreshold(blindable, total);
                         if (ratio <= 0f) break; // 0% → never throw
                         _botFlashRatioWindow[bidx] = (Server.CurrentTime + 12f, ratio);
 
-                        TryConditionalReplay(bot, g);
+                        TryConditionalReplay(bot, g, allControllers);
                         break;
                     }
 
-                    TryConditionalReplay(bot, g);
+                    TryConditionalReplay(bot, g, allControllers);
                 }
                 break; // one grenade trigger per bot per scan
             }
@@ -529,8 +541,8 @@ public class NadeSystemPlugin : BasePlugin
         }
     }
 
-    private bool HasLiveEnemyForTeam(int teamNum)
-    => Utilities.FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller")
+    private static bool HasLiveEnemyForTeam(int teamNum, List<CCSPlayerController> allControllers)
+    => allControllers
         .Any(p => p.IsValid && p.PawnIsAlive
             && ((int)p.TeamNum == 2 || (int)p.TeamNum == 3)
             && (int)p.TeamNum != teamNum);
@@ -594,10 +606,10 @@ public class NadeSystemPlugin : BasePlugin
         uint idx = (uint)player.Index;
         if (!_soundPoints.TryGetValue(idx, out var list))
         {
-            list = new List<Vector>();
+            list = new List<SoundPoint>();
             _soundPoints[idx] = list;
         }
-        list.Add(new Vector(ox, oy, oz));
+        list.Add(new SoundPoint(ox, oy, oz));
     }
 
     private HookResult OnWeaponFire(EventWeaponFire @event, GameEventInfo info)
@@ -772,21 +784,20 @@ public class NadeSystemPlugin : BasePlugin
     //  Grenade Replay
     // ═══════════════════════════════════════════════════════════
 
-    private void TryReplay(CCSPlayerController bot, GrenadeData g)
+    private void TryReplay(CCSPlayerController bot, GrenadeData g, List<CCSPlayerController> allControllers)
     {
         if (_botNadesMode == "off") return;
         // In case the bot has been taken over
         bool isTakenOver = bot.HasBeenControlledByPlayerThisRound;
         if (isTakenOver) return;
 
-        var gtype = g.GrenadeType.ToLower();
+        var gtype = g.GrenadeType; // lowercase since LoadDb
 
         // ── Round limit checks ─────────────────────────────────
         if (_botNadesMode == "normal")
         {
             int teamNum = bot.TeamNum;
-            int teamSize = Utilities
-                .FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller")
+            int teamSize = allControllers
                 .Count(p => p.IsValid && p.IsBot && (int)p.TeamNum == teamNum);
             if (teamSize < 1) teamSize = 1;
 
@@ -1313,11 +1324,12 @@ public class NadeSystemPlugin : BasePlugin
     //  Normal mode/ more mode decision system
     // ═══════════════════════════════════════════════════════════
 
-    private void TryConditionalReplay(CCSPlayerController bot, GrenadeData g)
+    private void TryConditionalReplay(CCSPlayerController bot, GrenadeData g,
+        List<CCSPlayerController> allControllers)
     {
         var pawn = bot.PlayerPawn?.Value;
         if (pawn == null || !pawn.IsValid) return;
-        if (!PassesSituationalCheck(bot, pawn, g, g.GrenadeType.ToLower()))
+        if (!PassesSituationalCheck(bot, pawn, g, g.GrenadeType, allControllers))
         {
             // Probability attempt cooldown
             if (g.GrenadeType.Equals("smoke", StringComparison.OrdinalIgnoreCase))
@@ -1327,11 +1339,12 @@ public class NadeSystemPlugin : BasePlugin
             }
             return;
         }
-        TryReplay(bot, g);
+        TryReplay(bot, g, allControllers);
     }
 
     private bool PassesSituationalCheck(
-        CCSPlayerController bot, CCSPlayerPawn pawn, GrenadeData g, string gtype)
+        CCSPlayerController bot, CCSPlayerPawn pawn, GrenadeData g, string gtype,
+        List<CCSPlayerController> allControllers)
     {
         //  He / Molotov decision
         if (gtype is "he" or "molotov")
@@ -1340,8 +1353,7 @@ public class NadeSystemPlugin : BasePlugin
             if (FiredRecently(bot, 1f)) return false;
 
             float lx = g.LandingPosition.X, ly = g.LandingPosition.Y, lz = g.LandingPosition.Z;
-            var nearbyEnemies = Utilities
-                .FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller")
+            var nearbyEnemies = allControllers
                 .Where(p =>
                 {
                     if (!p.IsValid || (int)p.TeamNum == bot.TeamNum) return false;
@@ -1398,7 +1410,7 @@ public class NadeSystemPlugin : BasePlugin
             if (!PassesTeamAndScheduleCheck(bot, g)) return false;
 
             // Collect enemies that can actually be blinded by this flash.
-            var blindableEnemies = CanBlindAnyEnemy(bot, g);
+            var blindableEnemies = CanBlindAnyEnemy(bot, g, allControllers);
             if (blindableEnemies.Count == 0) return false;
 
             // Information gate (normal / more mode): if no blindable enemy has info on this bot,
@@ -1441,8 +1453,7 @@ public class NadeSystemPlugin : BasePlugin
             }
 
             // Smoke Effective Range
-            bool anyEnemyClose = Utilities
-                .FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller")
+            bool anyEnemyClose = allControllers
                 .Any(p =>
                 {
                     if (!p.IsValid || (int)p.TeamNum == bot.TeamNum) return false;
@@ -1458,8 +1469,7 @@ public class NadeSystemPlugin : BasePlugin
                 .FirstOrDefault();
             if (bombEntity != null && bombEntity.IsValid)
             {
-                bool enemyNearLanding = Utilities
-                    .FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller")
+                bool enemyNearLanding = allControllers
                     .Any(p =>
                     {
                         if (!p.IsValid || (int)p.TeamNum == bot.TeamNum) return false;
@@ -1471,8 +1481,7 @@ public class NadeSystemPlugin : BasePlugin
             }
 
             // Probability
-            var allAlive = Utilities
-                .FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller")
+            var allAlive = allControllers
                 .Where(p => p.IsValid && p.PawnIsAlive
                     && ((int)p.TeamNum == 2 || (int)p.TeamNum == 3))
                 .ToList();
@@ -1522,11 +1531,12 @@ public class NadeSystemPlugin : BasePlugin
     }
 
     // Returns all enemies that can be blinded by this flash (FOV + LoS).
-    private List<CCSPlayerController> CanBlindAnyEnemy(CCSPlayerController bot, GrenadeData g)
+    private List<CCSPlayerController> CanBlindAnyEnemy(CCSPlayerController bot, GrenadeData g,
+        List<CCSPlayerController> allControllers)
     {
         var result = new List<CCSPlayerController>();
         float lx = g.LandingPosition.X, ly = g.LandingPosition.Y, lz = g.LandingPosition.Z;
-        foreach (var p in Utilities.FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller"))
+        foreach (var p in allControllers)
         {
             if (!p.IsValid || (int)p.TeamNum == bot.TeamNum) continue;
             var ep = GetActiveLivePawn(p);
@@ -1563,11 +1573,12 @@ public class NadeSystemPlugin : BasePlugin
     }
 
     // Returns (blindableCount, totalEnemyCount)
-    private (int blindable, int total) CountBlindableEnemies(CCSPlayerController bot, GrenadeData g)
+    private (int blindable, int total) CountBlindableEnemies(CCSPlayerController bot, GrenadeData g,
+        List<CCSPlayerController> allControllers)
     {
         float lx = g.LandingPosition.X, ly = g.LandingPosition.Y, lz = g.LandingPosition.Z;
         int blindable = 0, total = 0;
-        foreach (var p in Utilities.FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller"))
+        foreach (var p in allControllers)
         {
             if (!p.IsValid || (int)p.TeamNum == bot.TeamNum) continue;
             var ep = GetActiveLivePawn(p);
@@ -1914,12 +1925,14 @@ public class NadeSystemPlugin : BasePlugin
         }
         int retaliationSpawned = 0;
 
-        // Build candidate list
+        // Build candidate list (single pass: filter then sort)
+        // primary  : satisfies both direction and distance check  -> first
+        // secondary: nearest projectilePosition to victim         -> ascending
         var vPosForSort = victimPawn.AbsOrigin;
         var candidates = _mapNades
             .Where(g =>
             {
-                string gt = g.GrenadeType.ToLower();
+                string gt = g.GrenadeType; // lowercase since LoadDb
                 if (gt != "he" && gt != "molotov" && gt != "incgrenade") return false;
                 float d = Dist3D(atkPos.X, atkPos.Y, atkPos.Z,
                                  g.LandingPosition.X, g.LandingPosition.Y, g.LandingPosition.Z);
@@ -1927,33 +1940,31 @@ public class NadeSystemPlugin : BasePlugin
                 if (IsOnCooldown(g.Id)) return false;
                 return true;
             })
-            .ToList();
-
-        // primary  : satisfies both direction and distance check  -> first
-        // secondary: nearest projectilePosition to victim         -> ascending
-        candidates = candidates
             .OrderByDescending(g => FacesThrowDirection(victimPawn, g) ? 1 : 0)
             .ThenBy(g => vPosForSort == null ? 0f :
                 Dist3D(vPosForSort.X, vPosForSort.Y, vPosForSort.Z,
                        g.ProjectilePosition.X, g.ProjectilePosition.Y, g.ProjectilePosition.Z))
             .ToList();
 
+        // Loop-invariant purchase context; GetRoundSpendCap walks the entity
+        // table for gamerules, so resolve it once instead of per candidate.
+        var money = victim.InGameMoneyServices;
+        if (money == null) return;
+        bool isCT     = victim.TeamNum == (int)CsTeam.CounterTerrorist;
+        var costTable = isCT ? CostCT : CostT;
+        uint botIdx   = (uint)victim.Index;
+        bool isPoor   = _poorBots.Contains(botIdx);
+        int  spendCap = GetRoundSpendCap(isCT, isPoor);
+
         foreach (var g in candidates)
         {
             if (retaliationSpawned >= retaliationLimit) break;
 
-            string gt = g.GrenadeType.ToLower();
+            string gt = g.GrenadeType; // lowercase since LoadDb
 
-            var money = victim.InGameMoneyServices;
-            if (money == null) continue;
-            bool isCT = victim.TeamNum == (int)CsTeam.CounterTerrorist;
-            var costTable = isCT ? CostCT : CostT;
             if (!costTable.TryGetValue(gt, out int cost)) continue;
             if (money.Account < cost) continue;
 
-            uint botIdx = (uint)victim.Index;
-            bool isPoor   = _poorBots.Contains(botIdx);
-            int spendCap = GetRoundSpendCap(isCT, isPoor);
             if (!_roundSpendPerBot.TryGetValue(botIdx, out int alreadySpent)) alreadySpent = 0;
             bool deduct = alreadySpent < spendCap;
             if (deduct)

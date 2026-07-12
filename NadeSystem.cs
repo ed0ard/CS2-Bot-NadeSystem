@@ -101,7 +101,7 @@ public class RoundCounter
 public class NadeSystemPlugin : BasePlugin
 {
     public override string ModuleName    => "NadeSystem";
-    public override string ModuleVersion => "1.1.5";
+    public override string ModuleVersion => "1.1.6";
     public override string ModuleAuthor  => "ed0ard";
 
     // grenades folder lives inside the plugin directory
@@ -257,7 +257,7 @@ public class NadeSystemPlugin : BasePlugin
         _heCreate = new(
             RuntimeInformation.IsOSPlatform(OSPlatform.Linux)
                 ? "55 4C 89 C1 48 89 E5 41 57 49 89 FF 41 56 49 89 D6 48 89 F2 48 89 FE 41 55"
-                : "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 50 48 8B AC 24 80 00 00 00 49 8B F8");
+                : "48 89 ? 24 ? 48 89 ? 24 ? 48 89 ? 24 ? 57 48 83 EC ? 48 8B ? 24 ? 49 8B F8 4C 8B C2 0F 29 ? 24 ? 48 8B D1 48 8B D9 48 8D 0D ? ? ? ? 4C 8B CD E8 ? ? ? ? F3 0F 10 0D ? ? ? ? 48 8B C8 48 8B F0 E8 ? ? ? ? 48 8B D7 48 8B CE");
 
     // CMolotovProjectile::Create(pos, ang, vel, vel, owner, itemDef)
     private static readonly MemoryFunctionWithReturn<

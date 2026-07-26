@@ -30,6 +30,9 @@ Shows the current nade throwing mode
 `bot_nades off`  
 Bots won't throw any nades
 
+`bot_nades less`  
+Bots use the same decision logic as normal mode with lower count limits
+
 `bot_nades normal`  
 Bots follow almost the same count limits as human players (default)
 

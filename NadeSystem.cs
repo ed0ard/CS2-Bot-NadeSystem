@@ -101,14 +101,14 @@ public class RoundCounter
 public class NadeSystemPlugin : BasePlugin
 {
     public override string ModuleName    => "NadeSystem";
-    public override string ModuleVersion => "1.1.6";
+    public override string ModuleVersion => "1.1.7";
     public override string ModuleAuthor  => "ed0ard";
 
     // grenades folder lives inside the plugin directory
     private string DataDir => Path.Combine(ModuleDirectory, "grenades");
     // precache all the nades on this map
     private List<GrenadeData> _mapNades = new();
-    private string _botNadesMode = "normal"; // "off" | "normal" | "more" | "max"
+    private string _botNadesMode = "normal"; // "off" | "less" | "normal" | "more" | "max"
     // ── State ──────────────────────────────────────────────────
     private List<GrenadeData>     _db                = new();
     private List<CooldownEntry>   _cooldowns         = new();
@@ -132,6 +132,8 @@ public class NadeSystemPlugin : BasePlugin
     private bool _plantSmokeUsed     = false;
     // key = TeamNum (2=T, 3=CT)
     private Dictionary<int, RoundCounter> _roundCountByTeam = new();
+    // Less Mode: per-bot round throw counter (key = bot Index)
+    private Dictionary<uint, RoundCounter> _roundCountByBot = new();
     // key = bot Id, value = first continuous damage time
     private Dictionary<uint, float> _botMolotovDmgStart = new();
     // team-side cooldown: key = teamNum (2=T,3=CT), value = expiry time
@@ -299,7 +301,7 @@ public class NadeSystemPlugin : BasePlugin
             _replayBots.Clear();
         });
         
-        AddCommand("bot_nades", "Control bots' nade throw mode (off/normal/more/max)", CmdBotNades);
+        AddCommand("bot_nades", "Control bots' nade throw mode (off/less/normal/more/max)", CmdBotNades);
         
         Server.PrintToConsole($"[NadeSystem] Loaded — {_db.Count} grenades in DB.");
     }
@@ -406,6 +408,7 @@ public class NadeSystemPlugin : BasePlugin
                 // DECOY: handled entirely here, bypasses all other checks
                 if (gtype == "decoy")
                 {
+                    if (_botNadesMode == "off") continue;
                     if (IsOnCooldown(g.Id)) continue;
                     if (dx * dx + dy * dy > 200f * 200f) continue;
                     if (MathF.Abs(dz) > 85f) continue;
@@ -438,9 +441,9 @@ public class NadeSystemPlugin : BasePlugin
                 bool hasLiveEnemy = bot.TeamNum == (int)CsTeam.Terrorist ? hasLiveEnemyT : hasLiveEnemyCT;
                 if (!hasLiveEnemy) continue;
                 // Direction Judge 90°
-                // normal mode/ more mode：smoke and flash
+                // normal mode/ less mode/ more mode：smoke and flash
                 // max mode：smoke
-                bool doDirectionCheck = _botNadesMode == "normal" || _botNadesMode == "more"
+                bool doDirectionCheck = _botNadesMode == "normal" || _botNadesMode == "more" || _botNadesMode == "less"
                     ? (gtype == "smoke" || gtype == "flash")
                     : (gtype == "smoke");
                 if (doDirectionCheck && !FacesThrowDirection(pawn, g)) continue;
@@ -806,7 +809,13 @@ public class NadeSystemPlugin : BasePlugin
         var gtype = g.GrenadeType; // lowercase since LoadDb
 
         // ── Round limit checks ─────────────────────────────────
-        if (_botNadesMode == "normal")
+        // Less mode: per-bot limits (1 smoke, 1 molotov, 1 HE,
+        // ammo_grenade_limit_flashbang flashes, total <= 4 per round).
+        if (_botNadesMode == "less")
+        {
+            if (!LessModeAllows(gtype, (uint)bot.Index)) return;
+        }
+        else if (_botNadesMode == "normal")
         {
             int teamNum = bot.TeamNum;
             int teamSize = allControllers
@@ -877,8 +886,11 @@ public class NadeSystemPlugin : BasePlugin
         _replayBots.Add((uint)bot.Index);
         RegisterCooldown(g.Id, gtype);
         IncrementCount(gtype, bot.TeamNum);
-        // Normal Mode early smoke limit
-        if (_botNadesMode == "normal" && gtype == "smoke"
+        // Less mode: per-bot round count
+        if (_botNadesMode == "less")
+            IncrementBotCount(gtype, (uint)bot.Index);
+        // Normal/Less Mode early smoke limit
+        if ((_botNadesMode == "normal" || _botNadesMode == "less") && gtype == "smoke"
             && _freezeEndTime > 0f && Server.CurrentTime - _freezeEndTime < 5f)
         {
             _earlySmokeCountByTeam.TryGetValue(bot.TeamNum, out int cnt);
@@ -1195,11 +1207,51 @@ public class NadeSystemPlugin : BasePlugin
         _roundCountByTeam[teamNum] = counter;
     }
 
+    // ── Less mode: per-bot counting ─────────────────────────────
+    private void IncrementBotCount(string gtype, uint botIdx)
+    {
+        if (gtype == "incgrenade") gtype = "molotov";
+        if (!_roundCountByBot.TryGetValue(botIdx, out var counter))
+            counter = new RoundCounter();
+        switch (gtype.ToLower())
+        {
+            case "flash":   counter.Flash++;   break;
+            case "smoke":   counter.Smoke++;   break;
+            case "he":      counter.HE++;      break;
+            case "molotov": counter.Molotov++; break;
+        }
+        _roundCountByBot[botIdx] = counter;
+    }
+
+    // Less mode gate: true if this bot may still throw one more of gtype
+    // this round. Per bot: <= 1 smoke, <= 1 molotov, <= 1 HE,
+    // <= ammo_grenade_limit_flashbang flashes, and <= 4 nades total.
+    private bool LessModeAllows(string gtype, uint botIdx)
+    {
+        if (gtype == "incgrenade") gtype = "molotov";
+        if (!_roundCountByBot.TryGetValue(botIdx, out var c))
+            c = new RoundCounter();
+        // Total per-round cap
+        if (c.Flash + c.Smoke + c.HE + c.Molotov >= 4) return false;
+        switch (gtype)
+        {
+            case "flash":
+                var cv  = ConVar.Find("ammo_grenade_limit_flashbang");
+                int max = cv?.GetPrimitiveValue<int>() ?? 2;
+                return c.Flash < max;
+            case "smoke":   return c.Smoke   < 1;
+            case "he":      return c.HE      < 1;
+            case "molotov": return c.Molotov < 1;
+            default:        return false;
+        }
+    }
+
     private HookResult OnRoundStart(EventRoundStart @event, GameEventInfo info)
     {
         _roundOver  = false;
         _freezeEndTime = 0f;
         _roundCountByTeam.Clear();
+        _roundCountByBot.Clear();
         _cooldowns.Clear();
         _replayBots.Clear();
         _smokeCooldownBots.Clear();
@@ -1333,9 +1385,9 @@ public class NadeSystemPlugin : BasePlugin
             return;
         }
         var val = info.GetArg(1).ToLower();
-        if (val != "off" && val != "normal" && val != "more" && val != "max")
+        if (val != "off" && val != "less" && val != "normal" && val != "more" && val != "max")
         {
-            Server.PrintToConsole("\x0C[NadeSystem]\x01 Usage: bot_nades <off|normal|more|max>");
+            Server.PrintToConsole("\x0C[NadeSystem]\x01 Usage: bot_nades <off|less|normal|more|max>");
             return;
         }
         _botNadesMode = val;
@@ -1386,8 +1438,8 @@ public class NadeSystemPlugin : BasePlugin
                 .ToList();
             if (nearbyEnemies.Count == 0) return false;
 
-            // Information gate (normal / more mode).
-            if (_botNadesMode == "normal" || _botNadesMode == "more")
+            // Information gate (less / normal / more mode).
+            if (_botNadesMode == "normal" || _botNadesMode == "more" || _botNadesMode == "less")
             {
                 bool anyInfo = nearbyEnemies.Any(e => HasInformationOn(e, bot));
                 if (!anyInfo)
@@ -1434,8 +1486,8 @@ public class NadeSystemPlugin : BasePlugin
             var blindableEnemies = CanBlindAnyEnemy(bot, g, allControllers);
             if (blindableEnemies.Count == 0) return false;
 
-            // Information gate (normal / more mode): if no blindable enemy has info on this bot,
-            if (_botNadesMode == "normal" || _botNadesMode == "more")
+            // Information gate (less / normal / more mode): if no blindable enemy has info on this bot,
+            if (_botNadesMode == "normal" || _botNadesMode == "more" || _botNadesMode == "less")
             {
                 bool anyInfo = blindableEnemies.Any(e => HasInformationOn(e, bot));
                 if (!anyInfo)
@@ -1466,8 +1518,8 @@ public class NadeSystemPlugin : BasePlugin
                        && Dist3D(lx, ly, lz, d.LandingPosition.X, d.LandingPosition.Y, d.LandingPosition.Z) < 250f);
             if (tooClose) return false;
 
-            // Normal mode: Don't throw all your smoke right after freezeend
-            if (_botNadesMode == "normal" && _freezeEndTime > 0f && Server.CurrentTime - _freezeEndTime < 5f)
+            // Normal/Less mode: Don't throw all your smoke right after freezeend
+            if ((_botNadesMode == "normal" || _botNadesMode == "less") && _freezeEndTime > 0f && Server.CurrentTime - _freezeEndTime < 5f)
             {
                 _earlySmokeCountByTeam.TryGetValue(bot.TeamNum, out int cnt);
                 if (cnt >= 1) return false;
@@ -1921,15 +1973,15 @@ public class NadeSystemPlugin : BasePlugin
 
         string map = Server.MapName;
         int teamNum = victim.TeamNum;
-        // normal / more mode: retaliation cooldown per team (7s)
-        if (_botNadesMode == "normal" || _botNadesMode == "more")
+        // less / normal / more mode: retaliation cooldown per team (7s)
+        if (_botNadesMode == "normal" || _botNadesMode == "more" || _botNadesMode == "less")
         {
             if (_retaliationCooldown.TryGetValue(teamNum, out float cdExpiry)
                 && Server.CurrentTime < cdExpiry) return;
         }
-        // normal mode/ more mode: limit total he+molotov spawned per hurt event
+        // less / normal / more mode: limit total he+molotov spawned per hurt event
         int retaliationLimit = int.MaxValue;
-        if (_botNadesMode == "normal" || _botNadesMode == "more")
+        if (_botNadesMode == "normal" || _botNadesMode == "more" || _botNadesMode == "less")
         {
             var vPos = victimPawn.AbsOrigin;
             int aliveTeamSize = Utilities
@@ -1985,6 +2037,8 @@ public class NadeSystemPlugin : BasePlugin
 
             if (!costTable.TryGetValue(gt, out int cost)) continue;
             if (money.Account < cost) continue;
+            // Less mode: enforce per-bot round limits (counts retaliation nades).
+            if (_botNadesMode == "less" && !LessModeAllows(gt, botIdx)) continue;
 
             if (!_roundSpendPerBot.TryGetValue(botIdx, out int alreadySpent)) alreadySpent = 0;
             bool deduct = alreadySpent < spendCap;
@@ -1997,13 +2051,16 @@ public class NadeSystemPlugin : BasePlugin
 
             RegisterCooldown(g.Id, gt);
             SpawnProjectile(victim, g);
-            // Normal mode: counts retaliation nades toward round limit.
-            if (_botNadesMode == "normal") 
+            // Normal mode: counts retaliation nades toward per-team round limit.
+            if (_botNadesMode == "normal")
                 IncrementCount(gt, victim.TeamNum);
+            // Less mode: counts retaliation nades toward per-bot round limit.
+            else if (_botNadesMode == "less")
+                IncrementBotCount(gt, botIdx);
             retaliationSpawned++;
         }
-        // Write cooldown after retaliation completes (normal / more only)
-        if ((_botNadesMode == "normal" || _botNadesMode == "more") && retaliationSpawned > 0)
+        // Write cooldown after retaliation completes (less / normal / more)
+        if ((_botNadesMode == "normal" || _botNadesMode == "more" || _botNadesMode == "less") && retaliationSpawned > 0)
             _retaliationCooldown[teamNum] = Server.CurrentTime + 7f;
     }
     // ═══════════════════════════════════════════════════════════

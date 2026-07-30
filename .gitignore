@@ -1,0 +1,16 @@
+bin/
+obj/
+build/
+out/
+libs/
+
+.vs/
+.idea/
+.vscode/
+
+__pycache__/
+*.py[cod]
+
+*.user
+*.suo
+*.log

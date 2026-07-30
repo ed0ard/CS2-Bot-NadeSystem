@@ -6,6 +6,7 @@ using CounterStrikeSharp.API.Modules.Cvars;
 using CounterStrikeSharp.API.Modules.Events;
 using CounterStrikeSharp.API.Modules.Memory.DynamicFunctions;
 using CounterStrikeSharp.API.Modules.Timers;
+using CounterStrikeSharp.API.Modules.UserMessages;
 using CounterStrikeSharp.API.Modules.Utils;
 using System;
 using System.Collections.Generic;
@@ -161,6 +162,8 @@ public class NadeSystemPlugin : BasePlugin
     private const float FootstepSpeedThreshold = 150f;
     // Max distance at which a sound point can be heard by an enemy.
     private const float SoundHearRadius = 1000f;
+    // Current CS2 grenade throw events fade to silence at this distance
+    private const float GrenadeThrowSoundRange = 1100f;
     // ── Static lookup tables ───────────────────────────────────
     // (mapName_teamTag) → seconds after freezeend within which smoke/flash may trigger
     // e.g. "de_dust2_T" → 13f  means T-side nades tagged "T" must trigger within 13s of freezeend
@@ -232,6 +235,187 @@ public class NadeSystemPlugin : BasePlugin
         ["molotov"]    = 500,
         ["incgrenade"] = 500,
         ["decoy"]      = 0,
+    };
+
+    // Character definition overrides for agents that use a non-default voice profile
+    private static readonly Dictionary<ushort, string> AgentVoiceProfiles = new()
+    {
+        [4613] = "professional_epic",
+        [4711] = "swat_epic",
+        [4712] = "swat_fem",
+        [4726] = "professional_epic",
+        [4727] = "professional_fem",
+        [4730] = "professional_fem",
+        [4733] = "professional_epic",
+        [4734] = "professional_epic",
+        [4735] = "professional_epic",
+        [4736] = "professional_epic",
+        [4749] = "gendarmerie_male",
+        [4750] = "gendarmerie_male",
+        [4751] = "gendarmerie_fem_epic",
+        [4752] = "gendarmerie_male",
+        [4753] = "gendarmerie_male",
+        [4756] = "swat_fem",
+        [4757] = "seal_fem",
+        [4771] = "seal_diver_01",
+        [4772] = "seal_diver_02",
+        [4773] = "jungle_male",
+        [4774] = "jungle_male_epic",
+        [4775] = "jungle_male",
+        [4776] = "jungle_male",
+        [4777] = "jungle_fem_epic",
+        [4778] = "jungle_fem",
+        [4780] = "jungle_male_epic",
+        [4781] = "jungle_fem",
+        [5108] = "leet_epic",
+        [5308] = "fbihrt_epic",
+        [5400] = "gsg9",
+        [5404] = "seal_epic",
+        [5504] = "balkan_epic",
+    };
+
+    // Playable grenade voice events extracted from the current CS2 response rules
+    private static readonly Dictionary<
+        string,
+        (string He, string Flash, string Smoke, string Molotov, string Incendiary, string Decoy)>
+        GrenadeVoiceEvents = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["balkan"] = (
+            "balkan.t_grenade01", "balkan.t_flashbang01", "balkan.t_smoke01",
+            "balkan.t_molotov01", "balkan.t_molotov01", "balkan.t_decoy01"),
+        ["balkan_epic"] = (
+            "balkan_epic.throwing_grenade_01", "balkan_epic.throwing_flashbang_01",
+            "balkan_epic.throwing_smoke_01", "balkan_epic.throwing_molotov_01",
+            "balkan_epic.throwing_molotov_01", "balkan_epic.throwing_decoy_01"),
+        ["fbihrt"] = (
+            "fbihrt.ct_grenade01", "fbihrt.ct_flashbang01", "fbihrt.ct_smoke01",
+            "fbihrt.ct_molotov02", "fbihrt.ct_molotov02", "fbihrt.ct_decoy01"),
+        ["fbihrt_epic"] = (
+            "fbihrt_epic.throwing_grenade_01", "fbihrt_epic.throwing_flashbang_01",
+            "fbihrt_epic.throwing_smoke_01", "fbihrt_epic.throwing_molotov_01",
+            "fbihrt_epic.throwing_fire_01", "fbihrt_epic.throwing_decoy_01"),
+        ["gendarmerie_fem"] = (
+            "gendarmerie_fem.ff1_throwing_grenade_01",
+            "gendarmerie_fem.ff1_throwing_flashbang_01",
+            "gendarmerie_fem.ff1_throwing_smoke_01",
+            "gendarmerie_fem.ff1_throwing_molotov_01",
+            "gendarmerie_fem.ff1_throwing_molotov_01",
+            "gendarmerie_fem.ff1_throwing_decoy_01"),
+        ["gendarmerie_fem_epic"] = (
+            "gendarmerie_fem_epic.ff2_throwing_grenade_01",
+            "gendarmerie_fem_epic.ff2_throwing_flashbang_01",
+            "gendarmerie_fem_epic.ff2_throwing_smoke_01",
+            "gendarmerie_fem_epic.ff2_throwing_molotov_01",
+            "gendarmerie_fem_epic.ff2_throwing_fire_01",
+            "gendarmerie_fem_epic.ff2_throwing_decoy_01"),
+        ["gendarmerie_male"] = (
+            "gendarmerie_male.fm1_throwing_grenade_01",
+            "gendarmerie_male.fm1_throwing_flashbang_01",
+            "gendarmerie_male.fm1_throwing_smoke_01",
+            "gendarmerie_male.fm1_throwing_molotov_01",
+            "gendarmerie_male.fm1_throwing_molotov_01",
+            "gendarmerie_male.fm1_throwing_decoy_01"),
+        ["gsg9"] = (
+            "gsg9.ct_grenade01", "gsg9.ct_flashbang01", "gsg9.ct_smoke01",
+            "gsg9.ct_molotov01", "gsg9.ct_molotov01", "gsg9.ct_decoy01"),
+        ["jungle_fem"] = (
+            "jungle_fem.aff1_throwing_grenade_01",
+            "jungle_fem.aff1_throwing_flashbang_01",
+            "jungle_fem.aff1_throwing_smoke_01",
+            "jungle_fem.aff1_throwing_molotov_01",
+            "jungle_fem.aff1_throwing_molotov_01",
+            "jungle_fem.aff1_throwing_decoy_01"),
+        ["jungle_fem_epic"] = (
+            "jungle_fem_epic.aff1_throwing_grenade_01",
+            "jungle_fem_epic.aff1_throwing_flashbang_01",
+            "jungle_fem_epic.aff1_throwing_smoke_01",
+            "jungle_fem_epic.aff1_throwing_molotov_01",
+            "jungle_fem_epic.aff1_throwing_molotov_01",
+            "jungle_fem_epic.aff1_throwing_decoy_01"),
+        ["jungle_male"] = (
+            "jungle_male.afm1_throwing_grenade_01",
+            "jungle_male.afm1_throwing_flashbang_01",
+            "jungle_male.afm1_throwing_smoke_01",
+            "jungle_male.afm1_throwing_molotov_01",
+            "jungle_male.afm1_throwing_molotov_01",
+            "jungle_male.afm1_throwing_decoy_01"),
+        ["jungle_male_epic"] = (
+            "jungle_male_epic.afm2_throwing_grenade_01",
+            "jungle_male_epic.afm2_throwing_flashbang_01",
+            "jungle_male_epic.afm2_throwing_smoke_01",
+            "jungle_male_epic.afm2_throwing_molotov_01",
+            "jungle_male_epic.afm2_throwing_molotov_01",
+            "jungle_male_epic.afm2_throwing_decoy_01"),
+        ["leet"] = (
+            "leet.t_grenade01", "leet.t_flashbang01", "leet.t_smoke01",
+            "leet.t_molotov01", "leet.t_molotov01", "leet.t_decoy01"),
+        ["leet_epic"] = (
+            "leet_epic.throwing_grenade_01", "leet_epic.throwing_flashbang_01",
+            "leet_epic.throwing_smoke_01", "leet_epic.throwing_molotov_01",
+            "leet_epic.throwing_molotov_01", "leet_epic.throwing_decoy_01"),
+        ["phoenix"] = (
+            "phoenix.t_grenade02", "phoenix.t_flashbang01", "phoenix.t_smoke01",
+            "phoenix.t_molotov01", "phoenix.t_molotov01", "phoenix.t_decoy01"),
+        ["professional"] = (
+            "professional.t_grenade01", "professional.t_flashbang01",
+            "professional.t_smoke01", "professional.t_molotov01",
+            "professional.t_molotov01", "professional.t_decoy01"),
+        ["professional_epic"] = (
+            "professional_epic.throwing_grenade_01",
+            "professional_epic.throwing_flashbang_01",
+            "professional_epic.throwing_smoke_01",
+            "professional_epic.throwing_molotov_01",
+            "professional_epic.throwing_molotov_01",
+            "professional_epic.throwing_decoy_01"),
+        ["professional_fem"] = (
+            "professional_fem.throwing_grenade_02",
+            "professional_fem.throwing_flashbang_01",
+            "professional_fem.throwing_smoke_01",
+            "professional_fem.throwing_molotov_01",
+            "professional_fem.throwing_molotov_01",
+            "professional_fem.throwing_decoy_02"),
+        ["sas"] = (
+            "sas.ct_grenade01", "sas.ct_flashbang01", "sas.ct_smoke01",
+            "sas.ct_molotov01", "sas.ct_molotov01", "sas.ct_decoy01"),
+        ["seal"] = (
+            "seal.ct_grenade01", "seal.ct_flashbang01", "seal.ct_smoke01",
+            "seal.ct_molotov01", "seal.ct_molotov01", "seal.ct_decoy01"),
+        ["seal_diver_01"] = (
+            "seal_diver_01.am1_throwing_grenade_01",
+            "seal_diver_01.am1_throwing_flashbang_01",
+            "seal_diver_01.am1_throwing_smoke_01",
+            "seal_diver_01.am1_throwing_molotov_01",
+            "seal_diver_01.am1_throwing_molotov_01",
+            "seal_diver_01.am1_throwing_decoy_01"),
+        ["seal_diver_02"] = (
+            "seal_diver_02.am1_throwing_grenade_01",
+            "seal_diver_02.am1_throwing_flashbang_01",
+            "seal_diver_02.am1_throwing_smoke_01",
+            "seal_diver_02.am1_throwing_molotov_01",
+            "seal_diver_02.am1_throwing_molotov_01",
+            "seal_diver_02.am1_throwing_decoy_01"),
+        ["seal_epic"] = (
+            "seal_epic.throwing_grenade_01", "seal_epic.throwing_flashbang_01",
+            "seal_epic.throwing_smoke_01", "seal_epic.throwing_molotov_01",
+            "seal_epic.throwing_fire_01", "seal_epic.throwing_decoy_01"),
+        ["seal_fem"] = (
+            "seal_fem.af1_throwing_grenade_01",
+            "seal_fem.af1_throwing_flashbang_03",
+            "seal_fem.af1_throwing_smoke_01",
+            "seal_fem.af1_throwing_molotov_01",
+            "seal_fem.af1_throwing_molotov_01",
+            "seal_fem.af1_throwing_decoy_01"),
+        ["swat"] = (
+            "swat.ct_grenade01", "swat.ct_flashbang01", "swat.ct_smoke01",
+            "swat.ct_molotov01", "swat.ct_molotov01", "swat.ct_decoy01"),
+        ["swat_epic"] = (
+            "swat_epic.throwing_grenade_01", "swat_epic.throwing_flashbang_01",
+            "swat_epic.throwing_smoke_01", "swat_epic.throwing_molotov_01",
+            "swat_epic.throwing_molotov_01", "swat_epic.throwing_decoy_01"),
+        ["swat_fem"] = (
+            "swat_fem.throwing_grenade_02", "swat_fem.throwing_flashbang_01",
+            "swat_fem.throwing_smoke_01", "swat_fem.throwing_molotov_01",
+            "swat_fem.throwing_molotov_01", "swat_fem.throwing_decoy_01"),
     };
 
     // ── Native grenade factory functions ──────────────────────
@@ -967,6 +1151,7 @@ public class NadeSystemPlugin : BasePlugin
                     flash.Teleport(origin, angles, velocity);
                     flash.DispatchSpawn();
                     flash.Teleport(origin, angles, velocity);
+                    AnnounceGrenadeThrow(bot, gtype);
                     // Flash Immunity
                     float immuneUntil = Server.CurrentTime + 2f;
                     foreach (var teammate in Utilities
@@ -1009,6 +1194,7 @@ public class NadeSystemPlugin : BasePlugin
                     decoy.Teleport(origin, angles, velocity);
                     // Don't detonate
                     StartDecoyFlashLoop(bot, g, decoy, teamNum, angles);
+                    AnnounceGrenadeThrow(bot, gtype);
                     Server.PrintToConsole(
                         $"[NadeSystem] Replayed [decoy] id={g.Id[..8]}... " +
                         $"bot=[{bot.PlayerName}] " +
@@ -1036,6 +1222,7 @@ public class NadeSystemPlugin : BasePlugin
                     smoke.Thrower.Raw         = botPawn.EntityHandle.Raw;
                     smoke.OriginalThrower.Raw = botPawn.EntityHandle.Raw;
                     smoke.OwnerEntity.Raw     = botPawn.EntityHandle.Raw;
+                    AnnounceGrenadeThrow(bot, gtype);
                     Server.PrintToConsole(
                         $"[NadeSystem] Replayed [smoke] id={g.Id[..8]}... " +
                         $"bot=[{bot.PlayerName}] " +
@@ -1063,6 +1250,7 @@ public class NadeSystemPlugin : BasePlugin
                     he.Thrower.Raw         = botPawn.EntityHandle.Raw;
                     he.OriginalThrower.Raw = botPawn.EntityHandle.Raw;
                     he.OwnerEntity.Raw     = botPawn.EntityHandle.Raw;
+                    AnnounceGrenadeThrow(bot, gtype);
                     Server.PrintToConsole(
                         $"[NadeSystem] Replayed [he] id={g.Id[..8]}... " +
                         $"bot=[{bot.PlayerName}] " +
@@ -1092,6 +1280,7 @@ public class NadeSystemPlugin : BasePlugin
                     molotov.Thrower.Raw         = botPawn.EntityHandle.Raw;
                     molotov.OriginalThrower.Raw = botPawn.EntityHandle.Raw;
                     molotov.OwnerEntity.Raw     = botPawn.EntityHandle.Raw;
+                    AnnounceGrenadeThrow(bot, gtype);
                     Server.PrintToConsole(
                         $"[NadeSystem] Replayed [molotov] id={g.Id[..8]}... " +
                         $"bot=[{bot.PlayerName}] " +
@@ -1109,6 +1298,278 @@ public class NadeSystemPlugin : BasePlugin
             }
         });
     }
+
+    // Emits the same radio user messages and grenade_thrown event as a native throw
+    private void AnnounceGrenadeThrow(CCSPlayerController bot, string gtype)
+    {
+        try
+        {
+            bool isCT = bot.TeamNum == (int)CsTeam.CounterTerrorist;
+            (string RadioText, string Weapon) feedback = gtype switch
+            {
+                "smoke" => ("#SFUI_TitlesTXT_Smoke_in_the_hole", "smokegrenade"),
+                "flash" => ("#SFUI_TitlesTXT_Flashbang_in_the_hole", "flashbang"),
+                "he" => ("#SFUI_TitlesTXT_Fire_in_the_hole", "hegrenade"),
+                "molotov" when isCT => ("#SFUI_TitlesTXT_Incendiary_in_the_hole", "incgrenade"),
+                "molotov" => ("#SFUI_TitlesTXT_Molotov_in_the_hole", "molotov"),
+                "incgrenade" => ("#SFUI_TitlesTXT_Incendiary_in_the_hole", "incgrenade"),
+                "decoy" => ("#SFUI_TitlesTXT_Decoy_in_the_hole", "decoy"),
+                _ => default,
+            };
+
+            if (feedback == default)
+                return;
+
+            try
+            {
+                EmitGrenadeThrowSound(bot, gtype);
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole(
+                    $"[NadeSystem] Grenade throw sound error: {ex.Message}");
+            }
+
+            bool ignoreGrenadeRadio =
+                ConVar.Find("sv_ignoregrenaderadio")?.GetPrimitiveValue<bool>() ?? false;
+            if (!ignoreGrenadeRadio)
+            {
+                try
+                {
+                    string radioSound = ResolveGrenadeRadioSound(bot, gtype);
+                    SendNativeGrenadeRadio(bot, radioSound, feedback.RadioText);
+                }
+                catch (Exception ex)
+                {
+                    Server.PrintToConsole(
+                        $"[NadeSystem] Grenade radio error: {ex.Message}");
+                }
+            }
+
+            var grenadeThrown = new EventGrenadeThrown(true)
+            {
+                Userid = bot,
+                Weapon = feedback.Weapon,
+            };
+            grenadeThrown.FireEvent(false);
+        }
+        catch (Exception ex)
+        {
+            Server.PrintToConsole(
+                $"[NadeSystem] AnnounceGrenadeThrow error: {ex.Message}");
+        }
+    }
+
+    // Emits the current CS2 grenade release event to nearby players on both teams
+    private void EmitGrenadeThrowSound(CCSPlayerController bot, string grenadeType)
+    {
+        var pawn = bot.PlayerPawn?.Value;
+        if (pawn == null || !pawn.IsValid || !bot.PawnIsAlive)
+            return;
+
+        string soundEvent = ResolveGrenadeThrowSound(bot, grenadeType);
+        if (string.IsNullOrEmpty(soundEvent))
+            return;
+
+        var recipients = BuildGrenadeThrowSoundRecipients(pawn);
+        pawn.EmitSound(soundEvent, recipients, 1.0f, 1.0f);
+    }
+
+    // Resolves the native throw sound event for the replayed grenade type
+    private static string ResolveGrenadeThrowSound(
+        CCSPlayerController bot,
+        string grenadeType)
+    {
+        return grenadeType switch
+        {
+            "flash" => "Flashbang.Throw",
+            "smoke" => "SmokeGrenade.Throw",
+            "he" => "HEGrenade.Throw",
+            "molotov" when bot.TeamNum == (int)CsTeam.CounterTerrorist
+                => "IncGrenade.Throw",
+            "molotov" => "Molotov.Throw",
+            "incgrenade" => "IncGrenade.Throw",
+            "decoy" => "Decoy.Throw",
+            _ => "",
+        };
+    }
+
+    // Builds an all-team recipient filter matching the native throw event range
+    private RecipientFilter BuildGrenadeThrowSoundRecipients(CCSPlayerPawn source)
+    {
+        var recipients = new RecipientFilter();
+        var sourceOrigin = source.AbsOrigin;
+        if (sourceOrigin == null)
+            return recipients;
+
+        float rangeSquared = GrenadeThrowSoundRange * GrenadeThrowSoundRange;
+        foreach (var listener in Utilities.GetPlayers())
+        {
+            if (!listener.IsValid || listener.IsHLTV)
+                continue;
+
+            var listenerOrigin = GetActiveLivePawn(listener)?.AbsOrigin;
+            if (listenerOrigin == null)
+                continue;
+
+            float dx = listenerOrigin.X - sourceOrigin.X;
+            float dy = listenerOrigin.Y - sourceOrigin.Y;
+            float dz = listenerOrigin.Z - sourceOrigin.Z;
+            if (dx * dx + dy * dy + dz * dz <= rangeSquared)
+                recipients.Add(listener);
+        }
+
+        return recipients;
+    }
+
+    // Resolves a playable grenade voice event for the bot's current agent
+    private static string ResolveGrenadeRadioSound(
+        CCSPlayerController bot,
+        string grenadeType)
+    {
+        var pawn = bot.PlayerPawn?.Value;
+        if (pawn == null || !pawn.IsValid)
+            return "";
+
+        string profile = ResolveRadioVoiceProfile(bot, pawn);
+        if (!GrenadeVoiceEvents.TryGetValue(profile, out var voice))
+        {
+            profile = bot.TeamNum == (int)CsTeam.CounterTerrorist
+                ? "fbihrt"
+                : "phoenix";
+            voice = GrenadeVoiceEvents[profile];
+        }
+
+        return grenadeType switch
+        {
+            "he" => voice.He,
+            "flash" => voice.Flash,
+            "smoke" => voice.Smoke,
+            "molotov" when bot.TeamNum == (int)CsTeam.CounterTerrorist
+                => voice.Incendiary,
+            "molotov" => voice.Molotov,
+            "incgrenade" => voice.Incendiary,
+            "decoy" => voice.Decoy,
+            _ => "",
+        };
+    }
+
+    // Resolves the response-rule voice profile from agent definition and model
+    private static string ResolveRadioVoiceProfile(
+        CCSPlayerController bot,
+        CCSPlayerPawn pawn)
+    {
+        if (AgentVoiceProfiles.TryGetValue(pawn.CharacterDefIndex, out string? profile))
+            return profile;
+
+        var skeleton = pawn.CBodyComponent?.SceneNode?.GetSkeletonInstance();
+        string modelName = skeleton?.ModelState.ModelName ?? "";
+
+        if (modelName.Contains("tm_balkan", StringComparison.OrdinalIgnoreCase))
+            return "balkan";
+        if (modelName.Contains("tm_leet", StringComparison.OrdinalIgnoreCase))
+            return "leet";
+        if (modelName.Contains("tm_phoenix", StringComparison.OrdinalIgnoreCase))
+            return "phoenix";
+        if (modelName.Contains("tm_professional", StringComparison.OrdinalIgnoreCase))
+            return "professional";
+        if (modelName.Contains("tm_jungle", StringComparison.OrdinalIgnoreCase))
+            return "jungle_male";
+        if (modelName.Contains("ctm_fbi", StringComparison.OrdinalIgnoreCase))
+            return "fbihrt";
+        if (modelName.Contains("ctm_gsg9", StringComparison.OrdinalIgnoreCase))
+            return "gsg9";
+        if (modelName.Contains("ctm_sas", StringComparison.OrdinalIgnoreCase))
+            return "sas";
+        if (modelName.Contains("ctm_st6", StringComparison.OrdinalIgnoreCase))
+            return "seal";
+        if (modelName.Contains("ctm_swat", StringComparison.OrdinalIgnoreCase))
+            return "swat";
+        if (modelName.Contains("ctm_gendarmerie", StringComparison.OrdinalIgnoreCase))
+            return "gendarmerie_male";
+        if (modelName.Contains("ctm_diver", StringComparison.OrdinalIgnoreCase))
+            return "seal";
+
+        return bot.TeamNum == (int)CsTeam.CounterTerrorist
+            ? "fbihrt"
+            : "phoenix";
+    }
+
+    // Sends native radio text and plays the agent voice for radio-enabled teammates
+    private static void SendNativeGrenadeRadio(
+        CCSPlayerController bot,
+        string radioSound,
+        string radioText)
+    {
+        var pawn = bot.PlayerPawn?.Value;
+        if (pawn == null || !pawn.IsValid || !bot.PawnIsAlive)
+            return;
+
+        var recipients = BuildNativeRadioRecipients(bot);
+        string location = pawn.LastPlaceName;
+
+        using (var message = UserMessage.FromPartialName("CCSUsrMsg_RadioText"))
+        {
+            message.SetInt("msg_dst", 3);
+            message.SetInt("client", bot.Slot);
+            message.SetString(
+                "msg_name",
+                string.IsNullOrEmpty(location) ? "#Game_radio" : "#Game_radio_location");
+            message.AddString("params", bot.PlayerName);
+
+            if (string.IsNullOrEmpty(location))
+            {
+                message.AddString("params", radioText);
+                message.AddString("params", "");
+            }
+            else
+            {
+                message.AddString("params", location);
+                message.AddString("params", radioText);
+            }
+
+            message.AddString("params", "auto");
+            message.Send(recipients);
+        }
+
+        if (!string.IsNullOrEmpty(radioSound))
+            pawn.EmitSound(radioSound, recipients, 1.0f, 1.0f);
+    }
+
+    // Builds the standard team-only radio recipient filter
+    private static RecipientFilter BuildNativeRadioRecipients(CCSPlayerController speaker)
+    {
+        var recipients = new RecipientFilter();
+        bool relayRadio = ConVar.Find("tv_relayradio")?.GetPrimitiveValue<bool>() ?? false;
+
+        foreach (var listener in Utilities.GetPlayers())
+        {
+            if (!listener.IsValid)
+                continue;
+
+            if (listener.IsHLTV)
+            {
+                if (relayRadio)
+                    recipients.Add(listener);
+                continue;
+            }
+
+            if (listener.TeamNum != speaker.TeamNum)
+                continue;
+
+            var listenerPawn = listener.PlayerPawn?.Value;
+            if (listenerPawn?.IsValid == true &&
+                listenerPawn.RadioServices?.IgnoreRadio == true)
+            {
+                continue;
+            }
+
+            recipients.Add(listener);
+        }
+
+        return recipients;
+    }
+
     // Prevent a flashbang from detonating
     private void StartDecoyFlashLoop(CCSPlayerController bot, GrenadeData g,
         CFlashbangProjectile flash, int teamNum, QAngle angles)
@@ -1787,6 +2248,7 @@ public class NadeSystemPlugin : BasePlugin
                     smoke.Thrower.Raw         = botPawn.EntityHandle.Raw;
                     smoke.OriginalThrower.Raw = botPawn.EntityHandle.Raw;
                     smoke.OwnerEntity.Raw     = botPawn.EntityHandle.Raw;
+                    AnnounceGrenadeThrow(bot, gtype);
                 }
                 else if (gtype == "flash")
                 {
@@ -1808,6 +2270,7 @@ public class NadeSystemPlugin : BasePlugin
                     flash.Teleport(spawnPos, ang, vel);
                     flash.DispatchSpawn();
                     flash.Teleport(spawnPos, ang, vel);
+                    AnnounceGrenadeThrow(bot, gtype);
                 }
             }
             catch (Exception ex)

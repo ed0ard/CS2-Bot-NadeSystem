@@ -39,11 +39,8 @@ public partial class NadeSystemPlugin : BasePlugin
         var rules = Utilities.FindAllEntitiesByDesignerName<CCSGameRulesProxy>("cs_gamerules").FirstOrDefault();
         if (rules?.GameRules?.FreezePeriod == true) return;
 
-        // Materialize the controller list once per scan; every sub-check below
-        // reuses it instead of re-walking the entity table.
-        var allControllers = Utilities
-            .FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller")
-            .ToList();
+        // Query player slots once per scan and reuse the list for sub-checks.
+        var allControllers = Utilities.GetPlayers();
 
         bool hasLiveEnemyT  = HasLiveEnemyForTeam((int)CsTeam.Terrorist, allControllers);
         bool hasLiveEnemyCT = HasLiveEnemyForTeam((int)CsTeam.CounterTerrorist, allControllers);

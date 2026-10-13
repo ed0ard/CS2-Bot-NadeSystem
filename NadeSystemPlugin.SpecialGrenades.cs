@@ -31,8 +31,7 @@ public partial class NadeSystemPlugin : BasePlugin
         // In case the bot has been taken over
         bool isTakenOver = bot.HasBeenControlledByPlayerThisRound;
         if (isTakenOver) return;
-        bool hasLiveEnemy = Utilities
-            .FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller")
+        bool hasLiveEnemy = Utilities.GetPlayers()
             .Any(p => p.IsValid && p.PawnIsAlive
                 && ((int)p.TeamNum == 2 || (int)p.TeamNum == 3)
                 && (int)p.TeamNum != bot.TeamNum);
@@ -283,8 +282,7 @@ public partial class NadeSystemPlugin : BasePlugin
         if (_botNadesMode == "normal" || _botNadesMode == "more" || _botNadesMode == "less")
         {
             var vPos = victimPawn.AbsOrigin;
-            int aliveTeamSize = Utilities
-                .FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller")
+            int aliveTeamSize = Utilities.GetPlayers()
                 .Count(p =>
                 {
                     if (!p.IsValid || (int)p.TeamNum != victim.TeamNum) return false;

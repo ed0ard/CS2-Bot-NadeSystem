@@ -199,8 +199,7 @@ public partial class NadeSystemPlugin : BasePlugin
                     AnnounceGrenadeThrow(bot, gtype);
                     // Flash Immunity
                     float immuneUntil = Server.CurrentTime + 2f;
-                    foreach (var teammate in Utilities
-                        .FindAllEntitiesByDesignerName<CCSPlayerController>("cs_player_controller"))
+                    foreach (var teammate in Utilities.GetPlayers())
                     {
                         if (!teammate.IsValid || !teammate.IsBot) continue;
                         if ((int)teammate.TeamNum != (int)bot.TeamNum) continue;

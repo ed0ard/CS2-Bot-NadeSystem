@@ -236,10 +236,16 @@ public partial class NadeSystemPlugin : BasePlugin
 
     // * Evaluates living and blindable enemies once for a flash decision
     private FlashTargetEvaluation EvaluateFlashTargets(CCSPlayerController bot, GrenadeData g,
-        List<CCSPlayerController> allControllers)
+        List<CCSPlayerController> allControllers,
+        Dictionary<(int Team, GrenadeData Grenade), FlashTargetEvaluation>? evaluations = null)
     {
+        // Key by record identity, not Id: separate records may share the same Id.
+        var key = ((int)bot.TeamNum, g);
+        if (evaluations != null && evaluations.TryGetValue(key, out var cached)) return cached;
+
         var blindableEnemies = new List<CCSPlayerController>();
         int totalEnemies = 0;
+        bool allTracesSucceeded = true;
         float lx = g.LandingPosition.X, ly = g.LandingPosition.Y, lz = g.LandingPosition.Z;
         foreach (var p in allControllers)
         {
@@ -272,17 +278,25 @@ public partial class NadeSystemPlugin : BasePlugin
             if (deltaYaw <= 0.927f && deltaPitch <= MathF.PI / 4f)  // H: ±53°, V: ±45°
             {
                 // Raytrace check
-                if (FlashHasLoS(g.LandingPosition, eyeX, eyeY, eyeZ))
+                if (FlashHasLoS(g.LandingPosition, eyeX, eyeY, eyeZ, out bool traceSucceeded))
                     blindableEnemies.Add(p);
+                allTracesSucceeded &= traceSucceeded;
             }
         }
-        return new FlashTargetEvaluation(blindableEnemies, totalEnemies);
+        var evaluation = new FlashTargetEvaluation(blindableEnemies, totalEnemies);
+        // Preserve the fail-open result, but let later bots retry failed traces.
+        if (allTracesSucceeded && evaluations != null) evaluations[key] = evaluation;
+        return evaluation;
     }
     // Returns true if LandingPosition has unobstructed LoS to the given eye point.
     // Uses Masks.SolidBrushOnly, ignores players/props
     // * Checks world-only line of sight from a flash to an eye position
     private bool FlashHasLoS(Vec3 landing, float eyeX, float eyeY, float eyeZ)
+        => FlashHasLoS(landing, eyeX, eyeY, eyeZ, out _);
+
+    private bool FlashHasLoS(Vec3 landing, float eyeX, float eyeY, float eyeZ, out bool succeeded)
     {
+        succeeded = false;
         try
         {
             var start = new Vector(landing.X, landing.Y, landing.Z);
@@ -291,6 +305,7 @@ public partial class NadeSystemPlugin : BasePlugin
             var opts = new TraceOptions { InteractsWith = Masks.SolidBrushOnly };
             var res = Trace.TraceEndShape(start, end, options: opts);
 
+            succeeded = true;
             // fraction >= 0.99 → enemy can see the flash
             return res.Fraction >= 0.99f;
         }

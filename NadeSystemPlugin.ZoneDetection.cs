@@ -48,6 +48,11 @@ public partial class NadeSystemPlugin : BasePlugin
         bool hasLiveEnemyT  = HasLiveEnemyForTeam((int)CsTeam.Terrorist, allControllers);
         bool hasLiveEnemyCT = HasLiveEnemyForTeam((int)CsTeam.CounterTerrorist, allControllers);
 
+        // Only the throwing team, record and enemy state affect flash visibility.
+        // SpawnProjectile defers entity creation to NextFrame, so reuse evaluations
+        // within this synchronous scan, never across scans where players/doors move.
+        Dictionary<(int Team, GrenadeData Grenade), FlashTargetEvaluation>? flashEvaluations = null;
+
         foreach (var bot in allControllers)
         {
             if (!bot.IsValid || !bot.IsBot) continue;
@@ -123,7 +128,8 @@ public partial class NadeSystemPlugin : BasePlugin
                 if (_botNadesMode == "max")
                 {
                     if (gtype == "flash"
-                        && EvaluateFlashTargets(bot, g, allControllers).BlindableEnemies.Count == 0) continue;
+                        && EvaluateFlashTargets(bot, g, allControllers,
+                            flashEvaluations ??= new()).BlindableEnemies.Count == 0) continue;
                     // No HE/molotov within 1s of this bot firing.
                     if (gtype is "he" or "molotov" && FiredRecently(bot, 1f)) continue;
                     if (gtype is "he" or "molotov")
@@ -185,7 +191,8 @@ public partial class NadeSystemPlugin : BasePlugin
                         }
                         // Passed — compute new ratio and reset window after TryConditionalReplay succeeds
                         // We pass ratio computation into TryConditionalReplay via a pre-check here
-                        var flashEvaluation = EvaluateFlashTargets(bot, g, allControllers);
+                        var flashEvaluation = EvaluateFlashTargets(bot, g, allControllers,
+                            flashEvaluations ??= new());
                         float ratio = GetFlashRatioThreshold(
                             flashEvaluation.BlindableEnemies.Count, flashEvaluation.TotalEnemies);
                         if (ratio <= 0f) break; // 0% → never throw
